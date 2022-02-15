@@ -1,0 +1,10 @@
+# Node
+dist/
+node_modules/
+
+# Hardhat 
+cache/
+artifcats/
+
+.build-cache
+.vscode/*
