@@ -3,10 +3,10 @@ import { HardhatUserConfig } from "hardhat/config"
 const url: string = process.env.URL ?? ''
 const blockNumber: number = parseInt(process.env.BLOCK_NUMBER ?? '0', 10)
 
-let networks = {}
+let network = {}
 
 if (url !== '') {
-  networks = {
+  network = {
     hardhat: {
       forking: {
         url,
@@ -18,7 +18,7 @@ if (url !== '') {
 
 const config: HardhatUserConfig = {
   solidity: "0.7.4",
-  networks: { ...networks }
+  networks: { ...network }
 }
 
 module.exports = config
