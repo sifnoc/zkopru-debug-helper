@@ -1,6 +1,8 @@
 // import hre from 'hardhat'
 import { HttpNetworkConfig, EthereumProvider } from 'hardhat/types'
 import { createProvider } from 'hardhat/internal/core/providers/construction'
+import { rpcBlock } from 'hardhat/internal/core/jsonrpc/types/output/block'
+import { decodeJsonRpcResponse } from 'hardhat/internal/core/jsonrpc/types/output/decodeJsonRpcResponse'
 
 enum MiningMode {
   STOPPED,
@@ -34,12 +36,13 @@ export class HreController {
   }
 
   static async getBlockNumber(provider: EthereumProvider) {
-    return await provider.send("eth_getBlockByNumber", ['latest', false])
+    const rawResponse = await provider.send("eth_getBlockByNumber", ['latest', false])
+    return decodeJsonRpcResponse(rawResponse, rpcBlock)
   }
 
   async updateBlockNumber() {
     const block = await HreController.getBlockNumber(this.provider)
-    this.currentBlockNum = parseInt(block.number, 16)
+    this.currentBlockNum = block.number?.toNumber() ?? -1
   }
 
   async resetFork(blockNumber: number) {
