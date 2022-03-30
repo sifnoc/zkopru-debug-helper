@@ -6,6 +6,9 @@
   "repository": "https://github.com/sifnoc/zkopru-debug-helper",
   "author": "jin <sifnoc09@gmail.com>",
   "license": "MIT",
+  "scripts": {
+    "start": "hardhat node"
+  },
   "dependencies": {
     "hardhat": "2.8.3"
   },
