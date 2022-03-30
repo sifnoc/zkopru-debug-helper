@@ -35,34 +35,36 @@ export class HreController {
     this.provider = createProvider(`remoteNode`, localConfig)
   }
 
-  static async getBlockNumber(provider: EthereumProvider) {
-    const rawResponse = await provider.send("eth_getBlockByNumber", ['latest', false])
+  async getLatestBlock() {
+    const rawResponse = await this.provider.send("eth_getBlockByNumber", ['latest', false])
     return decodeJsonRpcResponse(rawResponse, rpcBlock)
   }
 
   async updateBlockNumber() {
-    const block = await HreController.getBlockNumber(this.provider)
+    const block = await this.getLatestBlock()
     this.currentBlockNum = block.number?.toNumber() ?? -1
   }
 
-  async resetFork(blockNumber: number) {
+  async resetFork(targetBlockNumber: number) {
+    let response: boolean
     try {
-      await this.provider.request({
+      response = await this.provider.request({
         method: "hardhat_reset",
         params: [
           {
             forking: {
               jsonRpcUrl: process.env.JSONRPC_URL ?? 'http://localhost:8545',
-              blockNumber,
+              blockNumber: targetBlockNumber,
             },
           },
         ],
-      })
+      }) as boolean
       await this.updateBlockNumber()
     } catch (error) {
-      throw Error(`Failed reset fork at ${blockNumber} - ${error}`)
+      throw Error(`Failed reset fork at ${targetBlockNumber} - ${error}`)
     }
     this.currentMiningMode = MiningMode.STOPPED
+    return response
   }
 
   // Manual Mode
@@ -103,7 +105,7 @@ export class HreController {
       await this.provider.send("evm_setIntervalMining", [0])
       this.currentMiningMode = MiningMode.STOPPED
     } catch (error) {
-      throw Error(`Failed move next block - ${error}`)
+      throw Error(`Failed to stop Auto mining - ${error}`)
     }
   }
 }
