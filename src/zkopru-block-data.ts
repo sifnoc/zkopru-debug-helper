@@ -1,30 +1,77 @@
+import { Event, EventFilter } from '@ethersproject/contracts'
+import { JsonRpcProvider } from '@ethersproject/providers'
 import {
     Block,
     L1Contract
 } from '../zkopru/packages/core'
-import { JsonRpcProvider } from '@ethersproject/providers'
+import { Proposal } from '../zkopru/packages/database'
+import { ICoordinatable__factory } from '../zkopru/packages/contracts'
 
-interface L2Block {
+interface L2Block extends Omit<Proposal, "proposalNum" | "fetched"> {
     proposalNum: number
     blockHash: string
     proposedAt: number
     proposalTx: string
 }
 
+export interface EventRes<R> extends Omit<Event, 'args'> {
+    args: R
+}
+
+interface FinalizeEventData {
+    blockHash: string
+}
+
+interface ProposalEventData {
+    proposalNum: number,
+    hash: string
+}
+
 export class ZkopruBlockData {
     provider: JsonRpcProvider
 
-    zkopruAddress: string
-
     latestBlockNumber: number
 
-    L2blockData: L2Block[]
+    zkopruAddress: string
+
+    l1Contract: L1Contract
+
+    l2BlockData: L2Block[]
+
+    l2UnprocessedEvent?: ProposalEventData[] | ProposalEventData[]
+
+    searchEventRange?: { lowerBound: number, upperBound: number }
 
     constructor(provider: JsonRpcProvider, zkopruAddress: string) {
         this.provider = provider
         this.zkopruAddress = zkopruAddress
+        this.l1Contract = new L1Contract(this.provider, this.zkopruAddress)
         this.latestBlockNumber = -1
-        this.L2blockData = []
+        this.l2BlockData = []
+    }
+
+    async init(range?: { from?: number, to?: number }) {
+        // check connection via get latest blockNumber
+        try {
+            this.latestBlockNumber = await this.provider.getBlockNumber()
+        } catch (error) {
+            throw Error(`could not get block number from provider - ${error as any}`)
+        }
+
+        // set search boundary on Layer1 blocks
+        const lowerBound = range?.from ?? 0
+        const upperBound = range?.to ? Math.min(range.to, this.latestBlockNumber) : this.latestBlockNumber
+
+        this.searchEventRange = { lowerBound, upperBound }
+
+        try {
+            const config = await this.l1Contract.getConfig()
+            if (!config) {
+                throw Error(`could not get config from zkopru contract`)
+            }
+        } catch (error) {
+            throw Error(`may not the address of zkopru contract, check contract address`)
+        }
     }
 
     static async txHashtoBlock(provider: JsonRpcProvider, txhash: string): Promise<Block> {
@@ -32,50 +79,68 @@ export class ZkopruBlockData {
         return Block.fromTx(tx)
     }
 
-    async searchProposeEvents() {
-        if (this.latestBlockNumber == -1) {
-            this.latestBlockNumber = await this.provider.getBlockNumber()
-        }
-        const l1Contract = new L1Contract(this.provider, this.zkopruAddress) // looks warn but fine
-        const newProposalFilter = l1Contract.coordinator.filters.NewProposal()
+    async getPastEvents<R>(
+        eventFilter: EventFilter,
+        stopTrigger?: (event: EventRes<R>) => boolean
+    ): Promise<EventRes<R>[]> {
+        if (!this.searchEventRange) throw Error(`May not initialized yet`)
+        const { lowerBound, upperBound } = this.searchEventRange
 
         const SCAN_SPEN = 10000
-        let currentBlock = this.latestBlockNumber
-        let latestL2Block = this.latestBlockNumber * 32 // TODO: check maximum L2 blocks in a L1 block in theor
 
-        while (latestL2Block > 1) // start from first proposal (#0 is genesis)
-        {
-            const startBlockNum = currentBlock - SCAN_SPEN - 1
-            const endBlockNum = currentBlock
-            const events = await l1Contract.coordinator.queryFilter(
-                newProposalFilter,
-                startBlockNum,
-                endBlockNum,
-            )
+        let searchContinue = true
+        let currentBlockPoint = upperBound
+
+        const coordinator = ICoordinatable__factory.connect(
+            this.zkopruAddress,
+            this.provider
+        )
+
+        let eventData: EventRes<R>[] = []
+
+        while (searchContinue) {
+            currentBlockPoint -= SCAN_SPEN
+
+            // query events to L1 node
+            const events = await coordinator.queryFilter(
+                eventFilter,
+                Math.max(currentBlockPoint - SCAN_SPEN - 1, lowerBound),
+                currentBlockPoint,
+            ) as EventRes<R>[]
+
+            // check next search
             if (events) {
-                console.log(`found events ${events.length}: fromBlock: ${startBlockNum}, toBlock: ${endBlockNum}`)
                 for (const event of [events].flat()) {
-                    const { args, blockNumber, transactionHash } = event
-                    const { proposalNum, blockHash } = args
-                    const newProposal = {
-                        proposalNum: proposalNum.toNumber(),
-                        blockHash: blockHash.toString(),
-                        proposedAt: blockNumber,
-                        proposalTx: transactionHash,
-                    }
-                    this.L2blockData.push(newProposal)
+                    eventData.push(event)
 
-                    if (proposalNum <= latestL2Block) {
-                        latestL2Block = proposalNum
+                    // if trigger mat, return event data
+                    if (stopTrigger && stopTrigger(event)) {
+                        return eventData
                     }
                 }
             }
-            // move scan point
-            currentBlock -= SCAN_SPEN
+            if (currentBlockPoint <= lowerBound) searchContinue = false
         }
+        return eventData
     }
 
-    // TODO
-    async searchFinalizeEvents() {}
+    async searchProposeEvents() {
+        const newProposalFilter = this.l1Contract.coordinator.filters.NewProposal()
+        const stopEventAt = (eventArgs: EventRes<ProposalEventData>) => {
+            if (eventArgs.args.proposalNum == 1) {
+                return true
+            }
+            return false
+        }
+
+        const newProposalEvents = await this.getPastEvents<ProposalEventData>(newProposalFilter, stopEventAt)
+        return newProposalEvents // TODO: no return, update data to class 
+    }
+
+    async searchFinalizeEvents() {
+        const finalizeFilter = this.l1Contract.coordinator.filters.Finalized()
+        const finalizeEvents = await this.getPastEvents<FinalizeEventData>(finalizeFilter)
+        return finalizeEvents // TODO: no return, update data to class 
+    }
 
 }
