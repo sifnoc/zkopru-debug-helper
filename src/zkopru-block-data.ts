@@ -2,7 +2,7 @@ import { Event, EventFilter } from '@ethersproject/contracts'
 import { JsonRpcProvider } from '@ethersproject/providers'
 import {
     Block,
-    L1Contract
+    L1Contract,
 } from '../zkopru/packages/core'
 import { Proposal } from '../zkopru/packages/database'
 import { ICoordinatable__factory } from '../zkopru/packages/contracts'
@@ -27,18 +27,25 @@ interface ProposalEventData {
     blockHash: string
 }
 
+interface SearchRange {
+    from?: number, 
+    to?: number
+}
+
 export class ZkopruBlockData {
     provider: JsonRpcProvider
 
-    latestBlockNumber: number
+    latestL1BlockNumber: number
 
     zkopruAddress: string
 
     l1Contract: L1Contract
 
-    l2BlockData: { [hash: string]: L2Block }
-
     latestProposal: { proposalNum: number, proposalHashes: string[] }
+
+    l2BlockData: { [proposalHash: string]: L2Block }
+
+    l2FinalizeData: { [proposalHash: string]: { finalizeTx: string, finalizedAt: number } }
 
     searchEventRange?: { lowerBound: number, upperBound: number }
 
@@ -46,22 +53,23 @@ export class ZkopruBlockData {
         this.provider = provider
         this.zkopruAddress = zkopruAddress
         this.l1Contract = new L1Contract(this.provider, this.zkopruAddress)
-        this.latestBlockNumber = -1
+        this.latestL1BlockNumber = -1
         this.l2BlockData = {}
+        this.l2FinalizeData = {}
         this.latestProposal = { proposalNum: -1, proposalHashes: [] }
     }
 
     async init(range?: { from?: number, to?: number }) {
         // check connection via get latest blockNumber
         try {
-            this.latestBlockNumber = await this.provider.getBlockNumber()
+            this.latestL1BlockNumber = await this.provider.getBlockNumber()
         } catch (error) {
             throw Error(`could not get block number from provider - ${error as any}`)
         }
 
         // set search boundary on Layer1 blocks
         const lowerBound = range?.from ?? 0
-        const upperBound = range?.to ? Math.min(range.to, this.latestBlockNumber) : this.latestBlockNumber
+        const upperBound = range?.to ? Math.min(range.to, this.latestL1BlockNumber) : this.latestL1BlockNumber
 
         this.searchEventRange = { lowerBound, upperBound }
 
@@ -77,12 +85,19 @@ export class ZkopruBlockData {
 
     async getPastEvents<R>(
         eventFilter: EventFilter,
+        range?: SearchRange,
         stopTrigger?: (event: EventRes<R>) => boolean
     ): Promise<EventRes<R>[]> {
         if (!this.searchEventRange) throw Error(`Not initialized yet`)
-        const { lowerBound, upperBound } = this.searchEventRange
+        let { lowerBound, upperBound } = this.searchEventRange
 
-        const SCAN_SPEN = 10000
+        // override search range in case
+        if (range?.from) lowerBound = range.from
+        if (range?.to) upperBound = range.to
+
+        // infura limit is that return result no more than 1000
+        // alchemy limit is 2000 block range
+        const SCAN_SPEN = 1000 
 
         let searchContinue = true
         let currentBlockPoint = upperBound
@@ -120,7 +135,23 @@ export class ZkopruBlockData {
         return eventData
     }
 
-    async updateProposalData() {
+    async updateFinalizeData(range?: SearchRange) {
+        const finalizeFilter = this.l1Contract.coordinator.filters.Finalized()
+        const finalizeEvents = await this.getPastEvents<FinalizeEventData>(finalizeFilter, range)
+        for (const event of finalizeEvents) {
+            const { transactionHash, blockNumber } = event
+            const { blockHash } = event.args
+
+            this.l2FinalizeData[blockHash] = {
+                finalizeTx: transactionHash,
+                finalizedAt: blockNumber
+            }
+
+            if (this.l2BlockData[blockHash]) this.l2BlockData[blockHash].finalized = true
+        }
+    }
+
+    async updateProposalData(range?: SearchRange) {
         const newProposalFilter = this.l1Contract.coordinator.filters.NewProposal()
         const stopEventAt = (eventArgs: EventRes<ProposalEventData>) => {
             if (eventArgs.args.proposalNum == 1) {
@@ -129,10 +160,10 @@ export class ZkopruBlockData {
             return false
         }
         // get event data and process txData to class
-        const newProposalEvents = await this.getPastEvents<ProposalEventData>(newProposalFilter, stopEventAt)
+        const newProposalEvents = await this.getPastEvents<ProposalEventData>(newProposalFilter, range, stopEventAt)
         for (const event of newProposalEvents) {
-            const { transactionHash, blockNumber } = event
-            const { proposalNum, blockHash } = event.args
+            const { transactionHash, blockNumber, args } = event
+            const { proposalNum, blockHash } = args
             const blockTx = await this.provider.getTransaction(transactionHash)
             const block = Block.fromTx(blockTx)
 
@@ -140,6 +171,7 @@ export class ZkopruBlockData {
             this.l2BlockData[blockHash] = {
                 proposedAt: blockNumber,
                 proposalTx: transactionHash,
+                finalized: this.l2FinalizeData[blockHash] ? true : false,
                 proposalNum,
                 block,
             }
@@ -153,11 +185,5 @@ export class ZkopruBlockData {
                 this.latestProposal.proposalHashes = [blockHash]
             }
         }
-    }
-
-    async searchFinalizeEvents() {
-        const finalizeFilter = this.l1Contract.coordinator.filters.Finalized()
-        const finalizeEvents = await this.getPastEvents<FinalizeEventData>(finalizeFilter)
-        return finalizeEvents // TODO: no return, update data to class 
     }
 }
