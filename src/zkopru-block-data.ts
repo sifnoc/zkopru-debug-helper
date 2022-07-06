@@ -1,3 +1,4 @@
+import { BigNumber } from 'ethers'
 import { Event, EventFilter } from '@ethersproject/contracts'
 import { JsonRpcProvider } from '@ethersproject/providers'
 import {
@@ -23,7 +24,7 @@ interface FinalizeEventData {
 }
 
 interface ProposalEventData {
-    proposalNum: number,
+    proposalNum: BigNumber,
     blockHash: string
 }
 
@@ -97,7 +98,7 @@ export class ZkopruBlockData {
 
         // infura limit is that return result no more than 1000
         // alchemy limit is 2000 block range
-        const SCAN_SPEN = 1000 
+        const SCAN_SPEN = 100000
 
         let searchContinue = true
         let currentBlockPoint = upperBound
@@ -154,7 +155,7 @@ export class ZkopruBlockData {
     async updateProposalData(range?: SearchRange) {
         const newProposalFilter = this.l1Contract.coordinator.filters.NewProposal()
         const stopEventAt = (eventArgs: EventRes<ProposalEventData>) => {
-            if (eventArgs.args.proposalNum == 1) {
+            if (eventArgs.args.proposalNum.toNumber() == 1) {
                 return true
             }
             return false
@@ -164,6 +165,7 @@ export class ZkopruBlockData {
         for (const event of newProposalEvents) {
             const { transactionHash, blockNumber, args } = event
             const { proposalNum, blockHash } = args
+            const l2BlockNum = proposalNum.toNumber()
             const blockTx = await this.provider.getTransaction(transactionHash)
             const block = Block.fromTx(blockTx)
 
@@ -172,16 +174,16 @@ export class ZkopruBlockData {
                 proposedAt: blockNumber,
                 proposalTx: transactionHash,
                 finalized: this.l2FinalizeData[blockHash] ? true : false,
-                proposalNum,
+                proposalNum: l2BlockNum,
                 block,
             }
 
             // update latest proposal data point
-            if (proposalNum == this.latestProposal.proposalNum) {
+            if (l2BlockNum == this.latestProposal.proposalNum) {
                 this.latestProposal.proposalHashes.push(blockHash)
             }
-            if (proposalNum > this.latestProposal.proposalNum) {
-                this.latestProposal.proposalNum = proposalNum
+            if (l2BlockNum > this.latestProposal.proposalNum) {
+                this.latestProposal.proposalNum = l2BlockNum
                 this.latestProposal.proposalHashes = [blockHash]
             }
         }
