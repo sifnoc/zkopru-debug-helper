@@ -29,7 +29,7 @@ interface ProposalEventData {
 }
 
 interface SearchRange {
-    from?: number, 
+    from?: number,
     to?: number
 }
 
@@ -42,11 +42,14 @@ export class ZkopruBlockData {
 
     l1Contract: L1Contract
 
-    latestProposal: { proposalNum: number, proposalHashes: string[] }
-
     l2BlockData: { [proposalHash: string]: L2Block }
 
     l2FinalizeData: { [proposalHash: string]: { finalizeTx: string, finalizedAt: number } }
+
+    l2IndexData: {
+        latestProposal: { proposalNum: number, proposalHashes: string[] }
+        oldestProposal: string[]
+    }
 
     searchEventRange?: { lowerBound: number, upperBound: number }
 
@@ -57,7 +60,10 @@ export class ZkopruBlockData {
         this.latestL1BlockNumber = -1
         this.l2BlockData = {}
         this.l2FinalizeData = {}
-        this.latestProposal = { proposalNum: -1, proposalHashes: [] }
+        this.l2IndexData = {
+            latestProposal: { proposalNum: -1, proposalHashes: [] },
+            oldestProposal: []
+        }
     }
 
     async init(range?: { from?: number, to?: number }) {
@@ -178,13 +184,17 @@ export class ZkopruBlockData {
                 block,
             }
 
-            // update latest proposal data point
-            if (l2BlockNum == this.latestProposal.proposalNum) {
-                this.latestProposal.proposalHashes.push(blockHash)
+            // update latest/oldest proposal data point
+            const { latestProposal, oldestProposal } = this.l2IndexData
+            if (l2BlockNum == latestProposal.proposalNum) {
+                latestProposal.proposalHashes.push(blockHash)
             }
-            if (l2BlockNum > this.latestProposal.proposalNum) {
-                this.latestProposal.proposalNum = l2BlockNum
-                this.latestProposal.proposalHashes = [blockHash]
+            if (l2BlockNum > latestProposal.proposalNum) {
+                latestProposal.proposalNum = l2BlockNum
+                latestProposal.proposalHashes = [blockHash]
+            }
+            if (l2BlockNum == 1) {
+                oldestProposal.push(blockHash)
             }
         }
     }
