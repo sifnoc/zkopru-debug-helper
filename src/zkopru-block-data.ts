@@ -48,7 +48,8 @@ export class ZkopruBlockData {
 
     l2IndexData: {
         latestProposal: { proposalNum: number, proposalHashes: string[] }
-        oldestProposal: string[]
+        oldestProposal: { proposalNum: number, proposalHashes: string[] }
+        childBlockHashes: { [parentsHash: string]: string[]}
     }
 
     searchEventRange?: { lowerBound: number, upperBound: number }
@@ -62,7 +63,8 @@ export class ZkopruBlockData {
         this.l2FinalizeData = {}
         this.l2IndexData = {
             latestProposal: { proposalNum: -1, proposalHashes: [] },
-            oldestProposal: []
+            oldestProposal: { proposalNum: Infinity, proposalHashes: [] },
+            childBlockHashes: {}
         }
     }
 
@@ -133,7 +135,7 @@ export class ZkopruBlockData {
 
                     // if trigger mat, return event data
                     if (stopTrigger && stopTrigger(event)) {
-                        return eventData
+                        searchContinue = false
                     }
                 }
             }
@@ -184,8 +186,17 @@ export class ZkopruBlockData {
                 block,
             }
 
+            const { latestProposal, oldestProposal, childBlockHashes } = this.l2IndexData
+
+            // update childBlockHashes
+            const parentBlockHash = block.header.parentBlock.toString()
+            if (!childBlockHashes[parentBlockHash]) {
+                childBlockHashes[parentBlockHash] = [blockHash]
+            } else if (childBlockHashes[parentBlockHash] && !childBlockHashes[parentBlockHash].includes(blockHash)) {
+                childBlockHashes[parentBlockHash].push(blockHash)
+            }
+
             // update latest/oldest proposal data point
-            const { latestProposal, oldestProposal } = this.l2IndexData
             if (l2BlockNum == latestProposal.proposalNum) {
                 latestProposal.proposalHashes.push(blockHash)
             }
@@ -193,9 +204,14 @@ export class ZkopruBlockData {
                 latestProposal.proposalNum = l2BlockNum
                 latestProposal.proposalHashes = [blockHash]
             }
-            if (l2BlockNum == 1) {
-                oldestProposal.push(blockHash)
+            if (l2BlockNum == oldestProposal.proposalNum) {
+                oldestProposal.proposalHashes.push(blockHash)
             }
+            if (l2BlockNum < oldestProposal.proposalNum) {
+                oldestProposal.proposalNum = l2BlockNum
+                oldestProposal.proposalHashes = [blockHash]
+            }
+
         }
     }
 }
