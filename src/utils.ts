@@ -1,5 +1,8 @@
 import Docker, { Container } from 'dockerode'
 
+import { schema } from '../zkopru/packages/database'
+import { SQLiteConnector } from '../zkopru/packages/database/dist/node'
+
 const ImageName = process.env.DOCKER_IMAGE_NAME ?? 'zkopru-debug/hardhat'
 const ImageTag = process.env.DOCKER_IMAGE_TAG ?? 'latest'
 
@@ -19,7 +22,7 @@ export async function checkHardhatImage(): Promise<boolean> {
   }
 }
 
-export async function getContainers(targetName: string) {
+export async function getContainers(targetName: string | RegExp) {
   const containerlist = await docker.listContainers({ all: true })
   for (const container of containerlist) {
     if (container.Names.includes("/" + targetName)) {
@@ -38,7 +41,7 @@ export async function removeContainer(Id: string) {
   await container.remove()
 }
 
-export async function runForkedChain(url?: string, blockNumber?: number, chainId?: number): Promise<Container> {
+export async function runForkedChain(url?: string, blockNumber?: number, chainId?: number, override?: any): Promise<Container> {
   const Env: string[] = []
 
   Env.push(`URL=${url}`)
@@ -59,7 +62,43 @@ export async function runForkedChain(url?: string, blockNumber?: number, chainId
       }
     },
     ExposedPorts: { "8545/tcp": {}}
-  })
+  , ...override})
 
   return hardhatContainer
+}
+
+// this method can get latest blockNumber in tables
+// for reducing download data from L1 node
+export async function getLatestStatus(fileName: string) {
+  // Layer1 blockNumber in database
+  // 1. proposal - proposedAt
+  // 2. MassDeposit - blockNumber
+  // 3. Deposit - blockNumber
+  // 4. Slash - slashedAt
+
+  const db = await SQLiteConnector.create(schema, fileName)
+  const latestProposal = await db.findOne('Proposal', {
+      where: {},
+      orderBy: { proposalNum: 'desc' },
+      include: { block: true },
+  })
+  const latestMassDeposit = await db.findOne('MassDeposit', {
+      where: {},
+      orderBy: { blockNumber: 'desc' }
+  })
+  const LatestDeposit = await db.findOne('Deposit', {
+      where: {},
+      orderBy: { blockNumber: 'desc' }
+  })
+  const LatestSlash = await db.findOne('Slash', {
+      where: {},
+      orderBy: { slashedAt: 'desc'}
+  })
+
+  return {
+      'LatestProposal': latestProposal.proposedAt as number,
+      'LatestMassDeposit': latestMassDeposit.blockNumber as number,
+      'LatestDeposit':  LatestDeposit.blockNumber as number,
+      'LatestSlash': LatestSlash.slashedAt as number
+  }
 }

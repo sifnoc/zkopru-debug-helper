@@ -8,3 +8,6 @@ artifcats/
 
 .build-cache
 .vscode/*
+
+# Debugger
+dbfiles/
