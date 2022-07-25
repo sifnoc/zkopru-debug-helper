@@ -1,3 +1,5 @@
+import fs from 'fs'
+import path from 'path'
 import Docker, { Container } from 'dockerode'
 
 import { schema } from '../zkopru/packages/database'
@@ -61,15 +63,23 @@ export async function runForkedChain(url?: string, blockNumber?: number, chainId
         "8545/tcp": [{ HostPort: "8545" }]
       }
     },
-    ExposedPorts: { "8545/tcp": {}}
-  , ...override})
+    ExposedPorts: { "8545/tcp": {} }
+    , ...override
+  })
 
   return hardhatContainer
 }
 
-// this method can get latest blockNumber in tables
+interface dbLatestStatus {
+  LatestProposal: number
+  LatestMassDeposit: number
+  LatestDeposit: number
+  LatestSlash: number
+}
+
+// this method can get latest blockNumber in tables of database
 // for reducing download data from L1 node
-export async function getLatestStatus(fileName: string) {
+export async function getLatestStatus(fileName: string): Promise<dbLatestStatus> {
   // Layer1 blockNumber in database
   // 1. proposal - proposedAt
   // 2. MassDeposit - blockNumber
@@ -78,27 +88,70 @@ export async function getLatestStatus(fileName: string) {
 
   const db = await SQLiteConnector.create(schema, fileName)
   const latestProposal = await db.findOne('Proposal', {
-      where: {},
-      orderBy: { proposalNum: 'desc' },
-      include: { block: true },
+    where: {},
+    orderBy: { proposalNum: 'desc' },
+    include: { block: true },
   })
   const latestMassDeposit = await db.findOne('MassDeposit', {
-      where: {},
-      orderBy: { blockNumber: 'desc' }
+    where: {},
+    orderBy: { blockNumber: 'desc' }
   })
   const LatestDeposit = await db.findOne('Deposit', {
-      where: {},
-      orderBy: { blockNumber: 'desc' }
+    where: {},
+    orderBy: { blockNumber: 'desc' }
   })
   const LatestSlash = await db.findOne('Slash', {
-      where: {},
-      orderBy: { slashedAt: 'desc'}
+    where: {},
+    orderBy: { slashedAt: 'desc' }
   })
 
   return {
-      'LatestProposal': latestProposal.proposedAt as number,
-      'LatestMassDeposit': latestMassDeposit.blockNumber as number,
-      'LatestDeposit':  LatestDeposit.blockNumber as number,
-      'LatestSlash': LatestSlash.slashedAt as number
+    LatestProposal: latestProposal.proposedAt as number,
+    LatestMassDeposit: latestMassDeposit.blockNumber as number,
+    LatestDeposit: LatestDeposit.blockNumber as number,
+    LatestSlash: LatestSlash.slashedAt as number
   }
+}
+
+export async function getCacheDbFile(blockNumber: number, customPath?: any) {
+  // get database files from path
+  let dbPath: string
+  if (customPath && path.isAbsolute(customPath)) {
+    dbPath = path.join(__dirname, customPath)
+  } else {
+    dbPath = path.join(__dirname, '../dbfiles/')
+  }
+  const allFiles = fs.readdirSync(dbPath, { encoding: 'utf8' })
+  const databaseFiles: string[] = []
+  for (const fileName of allFiles) {
+    if (fileName.endsWith('sqlite')) databaseFiles.push(fileName)
+  }
+
+  // select database file which most closest synced from 'blockNumber'
+  let cloestFile: string = ''
+  let databaseInfo: { [fileName: string]: dbLatestStatus } = {}
+  let searchedBoundry: { [fileName: string]: number } = {}
+  for (const dbFile of databaseFiles) {
+    const status = await getLatestStatus(path.join(dbPath, dbFile))
+    searchedBoundry[dbFile] = Math.max(...Object.values(status))
+    databaseInfo[dbFile] = status
+
+    const lowestBoundary = Math.min(...Object.values<number>(searchedBoundry))
+
+    if (blockNumber > lowestBoundary) {
+      // find database file which has cloest block number
+      let diff = Infinity
+      for (const fileName of Object.keys(searchedBoundry)) {
+        const blockNumDiff = blockNumber - searchedBoundry[fileName]
+        // console.log(`fileName: ${fileName} diff: ${blockNumDiff}`)
+        if (blockNumDiff >= 0 && diff >= blockNumDiff) {
+          diff = blockNumDiff
+          cloestFile = fileName
+        }
+      }
+    }
+  }
+  console.log(searchedBoundry)
+  if (cloestFile == '') throw Error(`not suitable database file as base`)
+  return path.join(dbPath, cloestFile)
 }
