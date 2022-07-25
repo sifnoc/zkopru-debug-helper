@@ -122,36 +122,23 @@ export async function getCacheDbFile(blockNumber: number, customPath?: any) {
     dbPath = path.join(__dirname, '../dbfiles/')
   }
   const allFiles = fs.readdirSync(dbPath, { encoding: 'utf8' })
-  const databaseFiles: string[] = []
-  for (const fileName of allFiles) {
-    if (fileName.endsWith('sqlite')) databaseFiles.push(fileName)
-  }
-
+  const databaseFiles = allFiles.reduce((dbFile, fileName) => {
+    if (fileName.endsWith('sqlite')) { dbFile.push(fileName)}
+    return dbFile
+  }, [] as string[])
+  
   // select database file which most closest synced from 'blockNumber'
   let cloestFile: string = ''
-  let databaseInfo: { [fileName: string]: dbLatestStatus } = {}
-  let searchedBoundry: { [fileName: string]: number } = {}
+  let lowestBoundary = Infinity
   for (const dbFile of databaseFiles) {
     const status = await getLatestStatus(path.join(dbPath, dbFile))
-    searchedBoundry[dbFile] = Math.max(...Object.values(status))
-    databaseInfo[dbFile] = status
-
-    const lowestBoundary = Math.min(...Object.values<number>(searchedBoundry))
-
-    if (blockNumber > lowestBoundary) {
-      // find database file which has cloest block number
-      let diff = Infinity
-      for (const fileName of Object.keys(searchedBoundry)) {
-        const blockNumDiff = blockNumber - searchedBoundry[fileName]
-        // console.log(`fileName: ${fileName} diff: ${blockNumDiff}`)
-        if (blockNumDiff >= 0 && diff >= blockNumDiff) {
-          diff = blockNumDiff
-          cloestFile = fileName
-        }
-      }
+    const diff = blockNumber - Math.max(...Object.values(status))
+    if (diff > 0 && diff <= lowestBoundary) {
+      lowestBoundary = diff
+      cloestFile = dbFile
     }
   }
-  console.log(searchedBoundry)
+  
   if (cloestFile == '') throw Error(`not suitable database file as base`)
   return path.join(dbPath, cloestFile)
 }
