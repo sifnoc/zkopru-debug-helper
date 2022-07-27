@@ -6,13 +6,18 @@ import {
     L1Contract,
 } from '../zkopru/packages/core'
 import { Proposal } from '../zkopru/packages/database'
-import { ICoordinatable__factory } from '../zkopru/packages/contracts'
+import {
+    ICoordinatable,
+    IChallengeable,
+    ICoordinatable__factory, 
+    IChallengeable__factory } from '../zkopru/packages/contracts'
 
 interface L2Block extends Omit<Proposal, "hash" | "fetched"> {
     proposedAt: number
     proposalTx: string
     proposalNum: number
     block: Block
+    slashed?: boolean
 }
 
 export interface EventRes<R> extends Omit<Event, 'args'> {
@@ -23,13 +28,19 @@ interface FinalizeEventData {
     blockHash: string
 }
 
+interface SlashEventData {
+    blockHash: string
+    proposer: string
+    reason: string
+}
+
 interface ProposalEventData {
-    proposalNum: BigNumber,
+    proposalNum: BigNumber
     blockHash: string
 }
 
 interface SearchRange {
-    from?: number,
+    from?: number
     to?: number
 }
 
@@ -46,10 +57,12 @@ export class ZkopruBlockData {
 
     l2FinalizeData: { [proposalHash: string]: { finalizeTx: string, finalizedAt: number } }
 
+    l2SlashData: { [proposalHash: string]: { slashTx: string, slashedAt: number, proposer: string, reason: string } }
+
     l2IndexData: {
         latestProposal: { proposalNum: number, proposalHashes: string[] }
         oldestProposal: { proposalNum: number, proposalHashes: string[] }
-        childBlockHashes: { [parentsHash: string]: string[]}
+        childBlockHashes: { [parentsHash: string]: string[] }
     }
 
     searchEventRange?: { lowerBound: number, upperBound: number }
@@ -61,6 +74,7 @@ export class ZkopruBlockData {
         this.latestL1BlockNumber = -1
         this.l2BlockData = {}
         this.l2FinalizeData = {}
+        this.l2SlashData = {}
         this.l2IndexData = {
             latestProposal: { proposalNum: -1, proposalHashes: [] },
             oldestProposal: { proposalNum: Infinity, proposalHashes: [] },
@@ -84,6 +98,7 @@ export class ZkopruBlockData {
 
         try {
             const config = await this.l1Contract.getConfig()
+            console.log(JSON.stringify(config))
             if (!config) {
                 throw Error(`could not get config from zkopru contract`)
             }
@@ -93,6 +108,7 @@ export class ZkopruBlockData {
     }
 
     async getPastEvents<R>(
+        contract: ICoordinatable | IChallengeable,
         eventFilter: EventFilter,
         range?: SearchRange,
         stopTrigger?: (event: EventRes<R>) => boolean
@@ -106,15 +122,10 @@ export class ZkopruBlockData {
 
         // infura limit is that return result no more than 1000
         // alchemy limit is 2000 block range
-        const SCAN_SPEN = 100000
+        const SCAN_SPEN = 1000
 
         let searchContinue = true
         let currentBlockPoint = upperBound
-
-        const coordinator = ICoordinatable__factory.connect(
-            this.zkopruAddress,
-            this.provider
-        )
 
         let eventData: EventRes<R>[] = []
 
@@ -122,7 +133,8 @@ export class ZkopruBlockData {
             currentBlockPoint -= SCAN_SPEN
 
             // query events to L1 node
-            const events = await coordinator.queryFilter(
+            console.log(`from: ${Math.max(currentBlockPoint - SCAN_SPEN - 1, lowerBound)}, to: ${currentBlockPoint}`)
+            const events = await contract.queryFilter(
                 eventFilter,
                 Math.max(currentBlockPoint - SCAN_SPEN - 1, lowerBound),
                 currentBlockPoint,
@@ -146,7 +158,11 @@ export class ZkopruBlockData {
 
     async updateFinalizeData(range?: SearchRange) {
         const finalizeFilter = this.l1Contract.coordinator.filters.Finalized()
-        const finalizeEvents = await this.getPastEvents<FinalizeEventData>(finalizeFilter, range)
+        const contract =  ICoordinatable__factory.connect(
+            this.zkopruAddress,
+            this.provider
+        )
+        const finalizeEvents = await this.getPastEvents<FinalizeEventData>(contract, finalizeFilter, range)
         for (const event of finalizeEvents) {
             const { transactionHash, blockNumber } = event
             const { blockHash } = event.args
@@ -160,6 +176,28 @@ export class ZkopruBlockData {
         }
     }
 
+    async updateSlashData(range?: SearchRange) {
+        const slashFilter = this.l1Contract.challenger.filters.Slash()
+        const contract =  IChallengeable__factory.connect(
+            this.zkopruAddress,
+            this.provider
+        )
+        const slashEvents = await this.getPastEvents<SlashEventData>(contract, slashFilter, range)
+        for (const event of slashEvents) {
+            const { blockNumber, transactionHash, args } = event
+            const { blockHash, proposer, reason } = args
+
+            this.l2SlashData[blockHash] = {
+                slashTx: transactionHash,
+                slashedAt: blockNumber,
+                proposer,
+                reason
+            }
+
+            if (this.l2BlockData[blockHash]) this.l2BlockData[blockHash].slashed = true
+        }
+    }
+
     async updateProposalData(range?: SearchRange) {
         const newProposalFilter = this.l1Contract.coordinator.filters.NewProposal()
         const stopEventAt = (eventArgs: EventRes<ProposalEventData>) => {
@@ -169,7 +207,11 @@ export class ZkopruBlockData {
             return false
         }
         // get event data and process txData to class
-        const newProposalEvents = await this.getPastEvents<ProposalEventData>(newProposalFilter, range, stopEventAt)
+        const contract =  ICoordinatable__factory.connect(
+            this.zkopruAddress,
+            this.provider
+        )
+        const newProposalEvents = await this.getPastEvents<ProposalEventData>(contract, newProposalFilter, range, stopEventAt)
         for (const event of newProposalEvents) {
             const { transactionHash, blockNumber, args } = event
             const { proposalNum, blockHash } = args
